@@ -12,7 +12,7 @@
     "type": "movies",
     "baseUrl": "https://redflix.co/",
     "searchBaseUrl": "https://redflix.co/browse?q=%s",
-    "scriptUrl": "https://raw.githubusercontent.com/winkeba/sora-modules/refs/heads/main/redflix.js",
+    "scriptUrl": "https://raw.githubusercontent.com/winkeba/winner-sora/refs/heads/main/redflix.js",
     "asyncJS": true,
     "streamAsyncJS": true,
     "softsub": true
