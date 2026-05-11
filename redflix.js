@@ -1,18 +1,23 @@
 // ============================================================
 // Redflix Module for Sora
-// Site: https://redflix.co
-// Mode: Async JS + StreamAsync + Softsubs
-// Uses: Redflix for search/details/episodes, vidsrc.me for streams
+// Search/Details/Episodes: TMDB API
+// Stream + Subtitles:      vidsrc.me
+// Mode: asyncJS + streamAsyncJS + softsub
 // ============================================================
 
-function extractTmdbId(url) {
-    // URLs like /movie/inception-27205 or /tv/breaking-bad-1396
-    const match = url.match(/\/(?:movie|tv)\/[^/?#]+-(\d+)/);
-    return match ? match[1] : null;
-}
+const TMDB_KEY = "8d6d91941230817f7807d643736e8a49";
+const TMDB_BASE = "https://api.themoviedb.org/3";
+const TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 
-function isMovie(url) {
-    return url.includes('/movie/');
+// ---- HELPERS ------------------------------------------------
+
+function parseUrl(url) {
+    const movie = url.match(/\/movie\/(?:[^/?#]+-)?(\d+)/);
+    if (movie) return { type: "movie", id: movie[1] };
+    const tv = url.match(/\/tv\/(?:[^/?#]+-)?(\d+)/);
+    if (tv) return { type: "tv", id: tv[1] };
+    const num = url.match(/\/(\d+)/);
+    return { type: "movie", id: num ? num[1] : "0" };
 }
 
 // ---- SEARCH -------------------------------------------------
@@ -21,49 +26,22 @@ async function searchResults(keyword) {
     try {
         const encoded = encodeURIComponent(keyword);
         const response = await fetchv2(
-            `https://redflix.co/browse?q=${encoded}`,
-            {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://redflix.co/'
-            }
+            `${TMDB_BASE}/search/multi?api_key=${TMDB_KEY}&query=${encoded}&language=en-US&page=1`
         );
-        const html = await response.text();
-        const results = [];
+        const data = await response.json();
 
-        const cardRegex = /<a[^>]+href="(\/(?:movie|tv)\/[^"]+)"[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"[^>]*>[\s\S]*?<(?:h2|h3|p|span)[^>]*>([\s\S]*?)<\/(?:h2|h3|p|span)>/gi;
-        let match;
-        while ((match = cardRegex.exec(html)) !== null) {
-            const href = 'https://redflix.co' + match[1].replace(/\/watch\/?$/, '').trim();
-            const image = match[2].trim();
-            const title = match[3].replace(/<[^>]+>/g, '').trim();
-            if (title && href) results.push({ title, image, href });
-        }
-
-        // Fallback: grab hrefs and TMDB poster URLs independently
-        if (results.length === 0) {
-            const hrefRegex = /href="(\/(?:movie|tv)\/[^"/]+)"/g;
-            const imgRegex = /src="(https:\/\/image\.tmdb\.org\/[^"]+)"/g;
-            const hrefs = [], imgs = [];
-            let m;
-            while ((m = hrefRegex.exec(html)) !== null) hrefs.push('https://redflix.co' + m[1]);
-            while ((m = imgRegex.exec(html)) !== null) imgs.push(m[1]);
-            hrefs.forEach((href, i) => {
-                const slugMatch = href.match(/\/(?:movie|tv)\/(.+)/);
-                if (!slugMatch) return;
-                const title = slugMatch[1]
-                    .replace(/-\d+$/, '')
-                    .replace(/-/g, ' ')
-                    .replace(/\b\w/g, c => c.toUpperCase());
-                results.push({ title, image: imgs[i] || '', href });
-            });
-        }
+        const results = (data.results || [])
+            .filter(item => item.media_type === "movie" || item.media_type === "tv")
+            .map(item => ({
+                title: item.title || item.name || "Unknown",
+                image: item.poster_path ? TMDB_IMG + item.poster_path : "",
+                href: `https://redflix.co/${item.media_type}/${item.id}`
+            }));
 
         return JSON.stringify(results);
     } catch (err) {
-        console.log('searchResults error:', err);
-        return JSON.stringify([{ title: 'Error', image: '', href: '' }]);
+        console.log("searchResults error:", err);
+        return JSON.stringify([{ title: "Error", image: "", href: "" }]);
     }
 }
 
@@ -71,32 +49,20 @@ async function searchResults(keyword) {
 
 async function extractDetails(url) {
     try {
-        const cleanUrl = url.replace(/\/watch\/?(\?.*)?$/, '');
-        const response = await fetchv2(cleanUrl, {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': 'https://redflix.co/'
-        });
-        const html = await response.text();
+        const { type, id } = parseUrl(url);
+        const response = await fetchv2(
+            `${TMDB_BASE}/${type}/${id}?api_key=${TMDB_KEY}&language=en-US`
+        );
+        const data = await response.json();
 
-        const descMatch =
-            html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]+)"/) ||
-            html.match(/<meta[^>]+name="description"[^>]+content="([^"]+)"/) ||
-            html.match(/<p[^>]*class="[^"]*overview[^"]*"[^>]*>([\s\S]*?)<\/p>/);
-        const description = descMatch
-            ? descMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#039;/g, "'").trim()
-            : 'No description available.';
-
-        const yearMatch = html.match(/(\d{4})/);
-        const airdate = yearMatch ? yearMatch[1] : 'Unknown';
-
-        const genreMatch = html.match(/<span[^>]*class="[^"]*genre[^"]*"[^>]*>([\s\S]*?)<\/span>/);
-        const aliases = genreMatch ? genreMatch[1].replace(/<[^>]+>/g, '').trim() : 'N/A';
+        const description = data.overview || "No description available.";
+        const airdate = (data.release_date || data.first_air_date || "Unknown").substring(0, 4);
+        const aliases = (data.genres || []).map(g => g.name).join(", ") || "N/A";
 
         return JSON.stringify([{ description, aliases, airdate }]);
     } catch (err) {
-        console.log('extractDetails error:', err);
-        return JSON.stringify([{ description: 'Error loading details.', aliases: 'N/A', airdate: 'Unknown' }]);
+        console.log("extractDetails error:", err);
+        return JSON.stringify([{ description: "Error loading details.", aliases: "N/A", airdate: "Unknown" }]);
     }
 }
 
@@ -104,147 +70,116 @@ async function extractDetails(url) {
 
 async function extractEpisodes(url) {
     try {
-        const cleanUrl = url.replace(/\/watch\/?(\?.*)?$/, '');
+        const { type, id } = parseUrl(url);
 
-        if (isMovie(cleanUrl)) {
-            return JSON.stringify([{ href: cleanUrl + '/watch', number: '1' }]);
+        if (type === "movie") {
+            return JSON.stringify([{ href: url, number: "1" }]);
         }
 
-        const tmdbId = extractTmdbId(cleanUrl);
+        const response = await fetchv2(
+            `${TMDB_BASE}/tv/${id}?api_key=${TMDB_KEY}&language=en-US`
+        );
+        const data = await response.json();
+
         const episodes = [];
-
-        // Try scraping Redflix episode list first
-        const response = await fetchv2(cleanUrl + '/watch', {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': 'https://redflix.co/'
-        });
-        const html = await response.text();
-
-        const epRegex = /href="(\/tv\/[^"]+watch\?[^"]*season=(\d+)[^"]*episode=(\d+)[^"]*)"/gi;
-        let m;
-        while ((m = epRegex.exec(html)) !== null) {
-            const href = 'https://redflix.co' + m[1].replace(/&amp;/g, '&');
-            const season = m[2];
-            const ep = m[3];
-            episodes.push({ href, number: `S${season}E${ep}` });
-        }
-
-        // Fallback: use TMDB API to build episode list
-        if (episodes.length === 0 && tmdbId) {
-            try {
-                const tmdbResp = await fetchv2(
-                    `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=8d6d91941230817f7807d643736e8a49`,
-                    { 'Accept': 'application/json' }
-                );
-                const tmdbData = await tmdbResp.json();
-                for (const season of (tmdbData.seasons || [])) {
-                    if (season.season_number === 0) continue;
-                    for (let ep = 1; ep <= season.episode_count; ep++) {
-                        episodes.push({
-                            href: `${cleanUrl}/watch?season=${season.season_number}&episode=${ep}`,
-                            number: `S${season.season_number}E${ep}`
-                        });
-                    }
-                }
-            } catch (tmdbErr) {
-                console.log('TMDB fallback error:', tmdbErr);
+        for (const season of (data.seasons || [])) {
+            if (season.season_number === 0) continue;
+            for (let ep = 1; ep <= season.episode_count; ep++) {
+                episodes.push({
+                    href: `https://redflix.co/tv/${id}/watch?season=${season.season_number}&episode=${ep}`,
+                    number: `S${season.season_number}E${ep}`
+                });
             }
         }
 
         if (episodes.length === 0) {
-            return JSON.stringify([{ href: cleanUrl + '/watch?season=1&episode=1', number: 'S1E1' }]);
+            return JSON.stringify([{
+                href: `https://redflix.co/tv/${id}/watch?season=1&episode=1`,
+                number: "S1E1"
+            }]);
         }
 
         return JSON.stringify(episodes);
     } catch (err) {
-        console.log('extractEpisodes error:', err);
-        return JSON.stringify([{ href: url, number: 'S1E1' }]);
+        console.log("extractEpisodes error:", err);
+        return JSON.stringify([{ href: url, number: "S1E1" }]);
     }
 }
 
-// ---- STREAM (StreamAsync + Softsubs) ------------------------
-// Builds a vidsrc.me embed URL from the TMDB ID in the Redflix URL,
-// follows the iframe chain to find HLS + .vtt subtitle URL,
-// and returns { stream, subtitles } for softsub mode.
+// ---- STREAM (streamAsyncJS + softsub) -----------------------
 
 async function extractStreamUrl(url) {
     try {
-        const tmdbId = extractTmdbId(url);
-        if (!tmdbId) {
-            console.log('Could not extract TMDB ID from:', url);
-            return JSON.stringify({ stream: null, subtitles: null });
-        }
+        const { type, id } = parseUrl(url);
 
         let embedUrl;
-        if (isMovie(url)) {
-            embedUrl = `https://vidsrc.me/embed/movie?tmdb=${tmdbId}`;
+        if (type === "movie") {
+            embedUrl = `https://vidsrc.me/embed/movie?tmdb=${id}`;
         } else {
-            const seasonMatch = url.match(/[?&]season=(\d+)/);
-            const epMatch = url.match(/[?&]episode=(\d+)/);
-            const season = seasonMatch ? seasonMatch[1] : '1';
-            const ep = epMatch ? epMatch[1] : '1';
-            embedUrl = `https://vidsrc.me/embed/tv?tmdb=${tmdbId}&season=${season}&episode=${ep}`;
+            const season = (url.match(/[?&]season=(\d+)/) || [])[1] || "1";
+            const ep     = (url.match(/[?&]episode=(\d+)/) || [])[1] || "1";
+            embedUrl = `https://vidsrc.me/embed/tv?tmdb=${id}&season=${season}&episode=${ep}`;
         }
 
-        console.log('vidsrc embed:', embedUrl);
+        console.log("Embed URL:", embedUrl);
 
-        // Step 1: load vidsrc embed page
+        // Step 1: vidsrc wrapper page
         const embedResp = await fetchv2(embedUrl, {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            'Referer': 'https://redflix.co/',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            "Referer": "https://vidsrc.me/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         });
         const embedHtml = await embedResp.text();
 
-        // Step 2: find inner player iframe
-        const iframeMatch = embedHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+        // Step 2: find inner player iframe src
+        const iframeMatch = embedHtml.match(/src=["'](https?:\/\/[^"']*vidsrc[^"']+)["']/i)
+                         || embedHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
         if (!iframeMatch) {
-            console.log('No iframe in vidsrc page');
+            console.log("No iframe found");
             return JSON.stringify({ stream: null, subtitles: null });
         }
 
-        const playerUrl = iframeMatch[1].replace(/&amp;/g, '&');
-        console.log('Player URL:', playerUrl);
+        const playerUrl = iframeMatch[1].replace(/&amp;/g, "&");
+        console.log("Player URL:", playerUrl);
 
-        // Step 3: load the actual player page
+        // Step 3: player page
         const playerResp = await fetchv2(playerUrl, {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            'Referer': embedUrl,
-            'Accept': '*/*'
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            "Referer": embedUrl,
+            "Accept": "*/*"
         });
         const playerHtml = await playerResp.text();
 
-        // Step 4: unpack obfuscated script if present
+        // Step 4: unpack obfuscated scripts
         let sourceHtml = playerHtml;
         const obfMatch = playerHtml.match(/<script[^>]*>\s*(eval\(function\(p,a,c,k,e,d[\s\S]*?)<\/script>/);
         if (obfMatch) {
-            try { sourceHtml = unpack(obfMatch[1]); } catch (e) { console.log('Unpack failed:', e); }
+            try { sourceHtml = unpack(obfMatch[1]); } catch (e) { console.log("Unpack failed:", e); }
         }
 
-        // Step 5: extract HLS stream
+        // Step 5: HLS stream
         const hlsMatch = sourceHtml.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)['"]/);
         if (hlsMatch) {
             const stream = hlsMatch[1];
-            // Look for English subtitle .vtt track
-            const vttMatch = sourceHtml.match(/["'](https?:\/\/[^"']+(?:english|en)[^"']*\.vtt[^"']*)['"]/i) ||
-                             sourceHtml.match(/["'](https?:\/\/[^"']+\.vtt[^"']*)['"]/);
+            const vttMatch =
+                sourceHtml.match(/["'](https?:\/\/[^"']*(?:english|en)[^"']*\.vtt[^"']*)['"]/i) ||
+                sourceHtml.match(/["'](https?:\/\/[^"']+\.vtt[^"']*)['"]/);
             const subtitles = vttMatch ? vttMatch[1] : null;
-            console.log('Stream:', stream, '| Subs:', subtitles);
+            console.log("Stream:", stream, "| Subs:", subtitles);
             return JSON.stringify({ stream, subtitles });
         }
 
-        // Step 6: fallback MP4
+        // Step 6: MP4 fallback
         const mp4Match = sourceHtml.match(/["'](https?:\/\/[^"']+\.mp4[^"']*)['"]/);
         if (mp4Match) {
             return JSON.stringify({ stream: mp4Match[1], subtitles: null });
         }
 
-        console.log('No stream found');
+        console.log("No stream found");
         return JSON.stringify({ stream: null, subtitles: null });
 
     } catch (err) {
-        console.log('extractStreamUrl error:', err);
+        console.log("extractStreamUrl error:", err);
         return JSON.stringify({ stream: null, subtitles: null });
     }
 }
@@ -257,7 +192,7 @@ class Unbaser {
     constructor(base) {
         this.ALPHABET = {
             62: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-            95: "' !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'",
+            95: "' !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'"
         };
         this.dictionary = {};
         this.base = base;
@@ -276,7 +211,7 @@ class Unbaser {
     _dictunbaser(value) {
         let ret = 0;
         [...value].reverse().forEach((cipher, index) => {
-            ret = ret + ((Math.pow(this.base, index)) * this.dictionary[cipher]);
+            ret += Math.pow(this.base, index) * this.dictionary[cipher];
         });
         return ret;
     }
@@ -284,31 +219,26 @@ class Unbaser {
 function detect(source) { return source.replace(" ", "").startsWith("eval(function(p,a,c,k,e,"); }
 function unpack(source) {
     let { payload, symtab, radix, count } = _filterargs(source);
-    if (count != symtab.length) throw Error("Malformed p.a.c.k.e.r. symtab.");
-    let unbase;
-    try { unbase = new Unbaser(radix); } catch (e) { throw Error("Unknown p.a.c.k.e.r. encoding."); }
+    if (count !== symtab.length) throw Error("Malformed p.a.c.k.e.r. symtab.");
+    const unbase = new Unbaser(radix);
     function lookup(match) {
-        const word = match;
-        let word2 = radix == 1 ? symtab[parseInt(word)] : symtab[unbase.unbase(word)];
-        return word2 || word;
+        const word2 = radix === 1 ? symtab[parseInt(match)] : symtab[unbase.unbase(match)];
+        return word2 || match;
     }
-    source = payload.replace(/\b\w+\b/g, lookup);
-    return _replacestrings(source);
+    return payload.replace(/\b\w+\b/g, lookup);
     function _filterargs(source) {
         const juicers = [
             /}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\), *(\d+), *(.*)\)\)/,
-            /}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\)/,
+            /}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\)/
         ];
         for (const juicer of juicers) {
             const args = juicer.exec(source);
             if (args) {
-                let a = args;
                 try {
-                    return { payload: a[1], symtab: a[4].split("|"), radix: parseInt(a[2]), count: parseInt(a[3]) };
-                } catch (ValueError) { throw Error("Corrupted p.a.c.k.e.r. data."); }
+                    return { payload: args[1], symtab: args[4].split("|"), radix: parseInt(args[2]), count: parseInt(args[3]) };
+                } catch (e) { throw Error("Corrupted p.a.c.k.e.r. data."); }
             }
         }
-        throw Error("Could not make sense of p.a.c.k.e.r data (unexpected code structure)");
+        throw Error("Could not make sense of p.a.c.k.e.r data.");
     }
-    function _replacestrings(source) { return source; }
 }
