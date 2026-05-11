@@ -1,0 +1,19 @@
+{
+    "sourceName": "Redflix",
+    "iconUrl": "https://redflix.co/favicon.ico",
+    "author": {
+        "name": "50/50",
+        "icon": "https://redflix.co/favicon.ico"
+    },
+    "version": "1.1.0",
+    "language": "English",
+    "streamType": "HLS",
+    "quality": "1080p",
+    "type": "movies",
+    "baseUrl": "https://redflix.co/",
+    "searchBaseUrl": "https://redflix.co/browse?q=%s",
+    "scriptUrl": "https://raw.githubusercontent.com/winkeba/sora-modules/refs/heads/main/redflix.js",
+    "asyncJS": true,
+    "streamAsyncJS": true,
+    "softsub": true
+}
